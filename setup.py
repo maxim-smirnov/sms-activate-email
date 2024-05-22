@@ -14,14 +14,6 @@ def read(*paths, **kwargs):
     return content
 
 
-def read_requirements(path):
-    return [
-        line.strip()
-        for line in read(path).split("\n")
-        if not line.startswith(('"', "#", "-", "git+"))
-    ]
-
-
 setup(
     name="sms-activate-email",
     version=read("sms_activate_email", "VERSION"),
@@ -29,5 +21,9 @@ setup(
     long_description=read("README.md"),
     long_description_content_type="text/markdown",
     packages=find_packages(exclude=["tests", ".github"]),
-    install_requires=read_requirements("requirements.txt")
+    install_requires=[
+        'setuptools~=68.2.0',
+        'requests~=2.31.0'
+    ],
+    package_data={"sms_activate_email": ["VERSION"]}
 )
