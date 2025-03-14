@@ -1,7 +1,8 @@
+import abc
 import enum
 import functools
 import json
-from builtins import type
+from abc import abstractmethod, ABC
 from datetime import datetime
 
 import requests
@@ -136,10 +137,57 @@ class EmailActivation:
         return f'#{self.id}: {self.email}'
 
 
-class SMSActivateEmailClient:
+class SMSActivateEmailClientABC(abc.ABC):
     """
     Represents an `sms-activate` API client for temporary mailboxes.
     """
+
+    @abstractmethod
+    def get_available_domains(self, from_domain: str) -> typing.List[EmailDomain]:
+        """
+        Get a list of available domains for temporary mailbox.
+        :param from_domain: Domain from which you are expecting to receive an email.
+        :return: List of available domains.
+        """
+        pass
+
+    @abstractmethod
+    def get_email_activations(self, page=1, per_page=10, search=None, sort='desc') -> typing.List[EmailActivation]:
+        """
+        Returns the list of currently active email activations.
+        :param page: The page number to get.
+        :param per_page: The number of activations per page.
+        :param search: The mailbox email to search for.
+        :param sort: The sorting order by `id` attribute. `asc` or `desc`.
+        :return: List of currently active email activations.
+        """
+        pass
+
+    @abstractmethod
+    def buy_email_activation(self, from_domain: str, domain: EmailDomain) -> EmailActivation:
+        """
+        Buy a new temporary mailbox.
+        :param from_domain: Domain from which you are expecting to receive an email.
+        :param domain: Domain for your mailbox. You can get it from `get_available_domains` method or construct
+        it manually e.g. `EmailDomain('outlook.com', EmailDomainType.POPULAR)`
+        :return: An `EmailActivation` instance.
+        """
+        pass
+
+    @abstractmethod
+    def _get_email_activation_text(self, activation: EmailActivation, period_sec: int = 5, attempts: int = 10) -> str:
+        pass
+
+    @abstractmethod
+    def _reactivate_email_activation(self, activation: EmailActivation) -> bool:
+        pass
+
+    @abstractmethod
+    def _cancel_email_activation(self, activation: EmailActivation) -> bool:
+        pass
+
+
+class SMSActivateEmailClientV1(SMSActivateEmailClientABC):
     def __init__(self, api_key: str, base_url: str = 'https://api.sms-activate.org/stubs/handler_api.php'):
         """
         :param api_key: Your API key for SMS-Activate.
@@ -149,7 +197,7 @@ class SMSActivateEmailClient:
         self._base_url = base_url
 
         self._session = requests.Session()
-        self._session.headers = {'User-Agent': 'python-sms-activate-email/0.1'}
+        self._session.headers = {'User-Agent': 'python-sms-activate-email/0.2'}
         self._session.params = {'api_key': self._api_key}
 
     @staticmethod
@@ -191,11 +239,6 @@ class SMSActivateEmailClient:
         return response_dict['response']
 
     def get_available_domains(self, from_domain: str) -> typing.List[EmailDomain]:
-        """
-        Get a list of available domains for temporary mailbox.
-        :param from_domain: Domain from which you are expecting to receive an email.
-        :return: List of available domains.
-        """
         response = self._session.get(self._base_url, params={'action': 'getDomains', 'site': from_domain})
         response_dict = self._response_to_dict(response)
         domains = [
@@ -217,14 +260,6 @@ class SMSActivateEmailClient:
         return domains
 
     def get_email_activations(self, page=1, per_page=10, search=None, sort='desc') -> typing.List[EmailActivation]:
-        """
-        Returns the list of currently active email activations.
-        :param page: The page number to get.
-        :param per_page: The number of activations per page.
-        :param search: The mailbox email to search for.
-        :param sort: The sorting order by `id` attribute. `asc` or `desc`.
-        :return: List of currently active email activations.
-        """
         response = self._session.get(self._base_url, params={
             'action': 'getMailHistory', 'page': page,
             'per_page': per_page, 'search': search, 'sort': sort
@@ -249,13 +284,6 @@ class SMSActivateEmailClient:
         return activations
 
     def buy_email_activation(self, from_domain: str, domain: EmailDomain) -> EmailActivation:
-        """
-        Buy a new temporary mailbox.
-        :param from_domain: Domain from which you are expecting to receive an email.
-        :param domain: Domain for your mailbox. You can get it from `get_available_domains` method or construct
-        it manually e.g. `EmailDomain('outlook.com', EmailDomainType.POPULAR)`
-        :return: An `EmailActivation` instance.
-        """
         response = self._session.get(self._base_url, params={
             'action': 'buyMailActivation', 'site': from_domain,
             'mail_type': domain.type.value, 'mail_domain': domain.name
@@ -286,4 +314,123 @@ class SMSActivateEmailClient:
     def _cancel_email_activation(self, activation: EmailActivation) -> bool:
         response = self._session.get(self._base_url, params={'action': 'cancelMailActivation', 'id': activation.id})
         response_dict = self._response_to_dict(response)
-        return response_dict
+        return True
+
+
+class SMSActivateEmailClientV2(SMSActivateEmailClientABC):
+    def __init__(self, api_key: str, base_url: str = 'https://api.sms-activate.ae/api/v2'):
+        """
+        :param api_key: Your API key for SMS-Activate.
+        :param base_url: API base URL.
+        """
+        self._api_key = api_key
+        self._base_url = base_url.rstrip('/')
+
+        self._session = requests.Session()
+        self._session.headers = {'User-Agent': 'python-sms-activate-email/0.2', 'X-API-Key': self._api_key}
+
+    @staticmethod
+    def _response_to_dict(response: requests.Response) -> dict:
+        """
+        Converts SMS-Activate response to dictionary and checks for API errors.
+        :param response: Requests response object.
+        :return: Dictionary with response data.
+        """
+
+        try:
+            response_dict = response.json()
+        except json.decoder.JSONDecodeError:
+            raise SMSActivateError('Bad json: {}'.format(response.text))
+
+        if not response.ok:
+            if response_dict['title'] == 'BAD_API_KEY':
+                raise BadAPIKeyError
+            if response_dict['title'] == 'BAD_BALANCE':
+                raise BadBalanceError
+            if response_dict['title'] == 'BAD_SITE' or response_dict['title'] == 'BLOCKED_SITE':
+                raise BadSiteError
+            if response_dict['title'] == 'BAD_DOMAIN':
+                raise BadDomainError
+            if response_dict['title'] == 'CHANNELS_LIMIT':
+                raise ChannelsLimitError
+            if response_dict['title'] == 'STATUS_WAIT_CODE':
+                raise WaitingForMessageError
+            raise SMSActivateError('Bad response: {}'.format(response_dict))
+        elif response.status_code == 404:
+            raise ActivationNotFoundError
+
+        return response_dict['data']
+
+    def get_available_domains(self, from_domain: str) -> typing.List[EmailDomain]:
+        response = self._session.get(f'{self._base_url}/domains', params={'site': from_domain})
+        response_dict = self._response_to_dict(response)
+        domains = [
+            EmailDomain(
+                domain['name'],
+                EmailDomainType.POPULAR,
+                domain['cost'],
+                domain.get('count', -1)
+            ) for domain in response_dict
+        ]
+        return domains
+
+    def get_email_activations(self, page=1, per_page=10, search=None, sort='desc') -> typing.List[EmailActivation]:
+        response = self._session.get(f'{self._base_url}/emails', params={
+            'page': page, 'per_page': per_page,
+            'search': search, 'sort': sort
+        })
+        response_dict = self._response_to_dict(response)
+        activations = []
+        for activation in response_dict:
+            activation = EmailActivation(
+                id=activation['id'],
+                email=activation['email'],
+                site=activation['site'],
+                status=activation['status'],
+                value=activation['value'],
+                cost=activation['cost'],
+                date=activation['date'],
+                full_message=activation['full_message']
+            )
+            activation.get_text = functools.partial(self._get_email_activation_text, activation)
+            activation.reactivate = functools.partial(self._reactivate_email_activation, activation)
+            activation.cancel = functools.partial(self._cancel_email_activation, activation)
+            activations.append(activation)
+        return activations
+
+    def buy_email_activation(self, from_domain: str, domain: EmailDomain) -> EmailActivation:
+        response = self._session.post(f'{self._base_url}/emails', params={
+            'site': from_domain,
+            'mailDomain': domain.name
+        })
+        response_dict = self._response_to_dict(response)
+        activation = EmailActivation(id=response_dict['id'], email=response_dict['email'])
+        activation.get_text = functools.partial(self._get_email_activation_text, activation)
+        activation.reactivate = functools.partial(self._reactivate_email_activation, activation)
+        activation.cancel = functools.partial(self._cancel_email_activation, activation)
+        return activation
+
+    def _get_email_activation_text(self, activation: EmailActivation, period_sec: int = 5, attempts: int = 10) -> str:
+        for i in range(attempts):
+            response = self._session.get(f'{self._base_url}/emails/{activation.id}')
+            response_dict = self._response_to_dict(response)
+            if response_dict.get('full_message', None):
+                activation.full_message = response_dict['full_message']
+                return response_dict['full_message']
+            time.sleep(period_sec)
+        raise TimeoutError('Timed out waiting for text')
+
+    def _reactivate_email_activation(self, activation: EmailActivation) -> bool:
+        response = self._session.post(f'{self._base_url}/emails/{activation.id}/reorder')
+        response_dict = self._response_to_dict(response)
+        return True
+
+
+    def _cancel_email_activation(self, activation: EmailActivation) -> bool:
+        response = self._session.delete(f'{self._base_url}/emails/{activation.id}')
+        response_dict = self._response_to_dict(response)
+        return True
+
+
+class SMSActivateEmailClient(SMSActivateEmailClientV2):
+    pass
