@@ -1,6 +1,12 @@
 # SMS-Activate Email API
 
-This is an unofficial API wrapper for `sms-activate.org` temporary mailboxes service.  
+This is an unofficial API wrapper for `sms-activate.org` temporary mailboxes service.
+
+## API v2
+V1 API was deprecated on sms-activate, now here are 2 classes `SMSActivateEmailClientV1` and
+`SMSActivateEmailClientV2`. 
+
+`SMSActivateEmailClient` now is just a child of `SMSActivateEmailClientV2`.
 
 ## Example
 ```python
